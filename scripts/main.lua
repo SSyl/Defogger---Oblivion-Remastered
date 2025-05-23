@@ -2,65 +2,84 @@
 print("[Defogger] Mod loading...\n")
 
 local logger = require("modules.logger")
-logger.debug = true   -- Enable debug logging to the UE4SS log
-local config       = require("modules.configHandler")
-local fogHandler   = require("modules.fogHandler")
-local consoleCmds  = require("modules.consoleCommands")
-local modUtils     = require("modules.modUtils")
+logger.debug = true
+local config = require("modules.configHandler")
+local fogHandler = require("modules.fogHandler")
+local UEHelpers = require("UEHelpers")
 
--- 2) Merge defaults.ini + config.ini into a typed settings table
-config.invalidateCache() -- Clears the cached INI if one existed
+config.invalidateCache()
 local settings = config.mergeConfig()
 
--- 3) Initial application of INI values at startup
-ExecuteInGameThread(function()
-    -- Wrap in pcall to prevent crashes during initialization
-    local success, err = pcall(function()
-        local fog = fogHandler.findMapFogComponent()
-        if fog and fog:IsValid() then
-            logger.log("Found fog component at startup, applying settings")
-            fogHandler.applyAll(fog, settings)
-        else
-            logger.log("[Warning] No valid map fog component found at startup (normal if in main menu).")
-        end
-    end)
+-- This initial block does not to run for fog in a playable map context due to main menu. Leaving here in case it turns out we do need it
+-- ExecuteInGameThread(function()
+--     logger.log("Initial application thread started.")
+--     local success, err = pcall(function()
+--         -- Get GameplayStatics using the helper. This might error if not found.
+--         local GameplayStatics = UEHelpers.GetGameplayStatics()
+--         -- No need to check 'if not GameplayStatics then' because pcall handles the error case.
 
-    if not success then
-        logger.log("[Error] Failed to apply initial settings: %s", tostring(err))
-    end
-end)
+--         -- Get World using the helper. This might return an invalid object.
+--         local world = UEHelpers.GetWorld() -- Or UEHelpers.GetWorldContextObject()
+--         if not world or not world:IsValid() then
+--             logger.log("[Warning] Initial: UEHelpers.GetWorld() returned an invalid world (normal if in main menu or very early load).")
+--             return -- Exit this pcall's function if no valid world
+--         end
 
--- 4) Re-apply whenever a new fog component appears (e.g. on level load)
+--         -- Now that we have a valid world and GameplayStatics...
+--         logger.log("Initial: World is valid. Searching for fog component.")
+--         local fog = fogHandler.findMapFogComponent()
+--         if fog and fog:IsValid() then
+--             logger.log("Found fog component at startup (%s), applying settings.", fog:GetFullName())
+--             fogHandler.applyAll(fog, settings)
+--         else
+--             logger.log("[Warning] No valid map fog component found at startup (normal if in main menu).")
+--         end
+--     end)
+
+--     if not success then
+--         -- 'err' will contain the error message, e.g., from UEHelpers.GetGameplayStatics() if it failed
+--         logger.log("[Error] Failed to apply initial settings: %s", tostring(err))
+--     end
+-- end)
+
+-- Re-apply whenever a new fog component appears (e.g. on level load)
 NotifyOnNewObject(
     "/Script/Engine.ExponentialHeightFogComponent",
     function(comp)
-        ExecuteInGameThread(function()
-            -- Wrap in pcall to prevent crashes when processing new objects
+        logger.log("NotifyOnNewObject triggered for component: %s", comp and comp:GetFullName() or "Comp Nil or Invalid Initially")
+
+        local delayMilliseconds = 125 -- ExecuteWithDelay in milliseconds. Should help prevent crash. Might need to be increased
+        logger.log("NotifyOnNewObject - Scheduling delayed processing in %s ms for component: %s", delayMilliseconds, comp and comp:GetFullName() or "Comp Nil or Invalid Initially")
+
+        ExecuteWithDelay(delayMilliseconds, function()
+            logger.log("NotifyOnNewObject (Delayed via ExecuteWithDelay): Processing component: %s", comp and comp:IsValid() and comp:GetFullName() or "Comp Nil or Invalid Initially after delay")
+
             local success, err = pcall(function()
-                -- Check validity before processing
                 if not comp or not comp:IsValid() then
-                    logger.log("[Warning] Invalid component in NotifyOnNewObject")
+                    logger.log("[Warning] NotifyOnNewObject (Delayed): Component became invalid or was invalid after delay for: %s", comp)
                     return
                 end
 
                 if fogHandler.isMapFogValid(comp) then
-                    -- Double-check validity before applying
                     if comp:IsValid() then
+                        logger.log("NotifyOnNewObject (Delayed): Applying settings to: %s", comp:GetFullName())
                         fogHandler.applyAll(comp, settings)
                     else
-                        logger.log("[Warning] Component became invalid before applying settings")
+                        logger.log("[Warning] NotifyOnNewObject (Delayed): Component %s became invalid just before applyAll.", comp:GetFullName())
                     end
+                else
+                     logger.log("NotifyOnNewObject (Delayed): Component %s not considered valid map fog after delay.", comp and comp:GetFullName() or "Comp was nil")
                 end
             end)
 
             if not success then
-                logger.log("[Error] Failed to process new fog component: %s", tostring(err))
+                logger.log("[Error] NotifyOnNewObject (Delayed): Failed to process new fog component: %s. Error: %s", comp and comp:GetFullName(), tostring(err))
             end
         end)
     end
 )
 
--- Map of component setters to their native UFunction paths
+-- Hooks
 local setterHooks = {
     StartDistance                       = "/Script/Engine.ExponentialHeightFogComponent:SetStartDistance",
     FogCutOffDistance                   = "/Script/Engine.ExponentialHeightFogComponent:SetFogCutoffDistance",
@@ -69,29 +88,23 @@ local setterHooks = {
     VolumetricFogScatteringDistribution = "/Script/Engine.ExponentialHeightFogComponent:SetVolumetricFogScatteringDistribution",
 }
 
--- Track which hooks were successfully registered
-local registeredHooks = {}
-
--- Register a hook for each setter (with safer error handling)
 for property, fnPath in pairs(setterHooks) do
-    local success, errorMsg = pcall(function()
-        RegisterHook(fnPath, function(self, newVal) -- Hook engine setter functions to block only when forced via console
-            -- Wrap hook logic in pcall
-            local hookSuccess, hookErr = pcall(function()
-                if self and self:IsValid() and self._defoggerForce then
-                    self._defoggerForce = nil -- clear the flag so only this one setter is blocked
-                    return false  -- veto only forced console calls
+    local hook_success, errorMsg = pcall(function()
+        RegisterHook(fnPath, function(self, newVal)
+            local hookExecSuccess, hookErr = pcall(function()
+                if not self or not self:IsValid() then return end
+                if self._defoggerForce then
+                    self._defoggerForce = nil
+                    return false
                 end
             end)
-
-            if not hookSuccess then
-                logger.log("[Error] Hook error for %s: %s", property, tostring(hookErr))
+            if not hookExecSuccess then
+                logger.log("[Error] Hook execution error for %s on %s: %s", property, self and self:GetFullName(), tostring(hookErr))
             end
-            -- allow normal engine-driven sets otherwise
         end)
     end)
 
-    if success then
+    if hook_success then
         logger.log("Registered hook for %s", property)
     else
         logger.log("[Warning] Failed to hook %s: %s", property, tostring(errorMsg))
