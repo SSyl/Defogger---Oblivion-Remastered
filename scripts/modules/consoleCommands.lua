@@ -46,11 +46,11 @@ commandRecords[#commandRecords + 1] = {
         Ar:Log("[Defogger] Reloading config...")
         local cfg = (configHandler.reloadConfig or configHandler.mergeConfig)()
         local comp = fogHandler.findMapFogComponent()
-        if comp then
+        if comp and comp:IsValid() then
             fogHandler.applyAll(comp, cfg)
             Ar:Log("[Defogger] Settings reapplied.")
         else
-            Ar:Log("[Defogger] No fog component found.")
+            Ar:Log("[Defogger] No valid fog component found.")
         end
         return true
     end
@@ -95,11 +95,16 @@ for _, entry in ipairs(propertyShortcuts) do
             --------------------------------------------------------------------
             if not rawValue or rawValue == "" then
                 local comp = fogHandler.findMapFogComponent()
-                if comp then
-                    local current = comp[propName]
-                    Ar:Log(string.format("[Defogger] %s = %s", propName, fogHandler.formatValue(current)))
+                if comp and comp:IsValid() then
+                    -- Use pcall to safely read property
+                    local success, current = pcall(function() return comp[propName] end)
+                    if success then
+                        Ar:Log(string.format("[Defogger] %s = %s", propName, fogHandler.formatValue(current)))
+                    else
+                        Ar:Log("[Defogger] Failed to read property value (component may be invalid)")
+                    end
                 else
-                    Ar:Log("[Defogger] No fog component found.")
+                    Ar:Log("[Defogger] No valid fog component found.")
                 end
                 return true
             end
@@ -116,14 +121,22 @@ for _, entry in ipairs(propertyShortcuts) do
             -- Apply override
             --------------------------------------------------------------------
             local comp = fogHandler.findMapFogComponent()
-            if comp then comp._defoggerForce = forceSet end  -- used by hook system
+            if comp and comp:IsValid() then 
+                -- Use pcall to safely set the force flag
+                pcall(function() comp._defoggerForce = forceSet end)
+            end
 
-            fogHandler.applySingle(propName, parsedValue)
+            local success = fogHandler.applySingle(propName, parsedValue)
 
-            Ar:Log(string.format("[Defogger] %s %s to %s",
-                                 propName,
-                                 forceSet and "force-set" or "set",
-                                 rawValue))
+            if success then
+                Ar:Log(string.format("[Defogger] %s %s to %s",
+                                     propName,
+                                     forceSet and "force-set" or "set",
+                                     rawValue))
+            else
+                Ar:Log("[Defogger] Failed to apply value (component may be invalid)")
+            end
+
             return true
         end
     }
@@ -135,8 +148,17 @@ end
 for _, cmd in ipairs(commandRecords) do
     -- Create a case-insensitive command handler function
     local handlerFn = function(fullCommand, parts, Ar)
-        -- Call the original handler
-        return cmd.fn(fullCommand, parts, Ar)
+        -- Wrap the entire handler in pcall for safety
+        local success, err = pcall(function()
+            return cmd.fn(fullCommand, parts, Ar)
+        end)
+
+        if not success then
+            Ar:Log(string.format("[Defogger] Command error: %s", tostring(err)))
+            return true
+        end
+
+        return success
     end
 
     -- Register the original command (for those who know the correct case)

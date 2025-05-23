@@ -30,8 +30,12 @@ end
 
 function fogHandler.isMapFogValid(comp)
     if not comp or not comp:IsValid() then return false end
-    local ok, fullName = pcall(function() return comp:GetFullName() end)
-    return ok and type(fullName)=="string" and fullName:find("/Game/Maps/")~=nil
+    -- Use pcall for all UObject access to prevent crashes
+    local ok, result = pcall(function()
+        local fullName = comp:GetFullName()
+        return type(fullName)=="string" and fullName:find("/Game/Maps/")~=nil
+    end)
+    return ok and result
 end
 
 function fogHandler.findMapFogComponent()
@@ -63,6 +67,12 @@ fogHandler.propertyMap = {
 }
 
 function fogHandler.applyAll(comp, fullConfig)
+    -- Add validity check at the start
+    if not comp or not comp:IsValid() then
+        logger.log("[Warning] Invalid component passed to applyAll")
+        return
+    end
+
     local section = fogHandler.getLevelType()
     local cfg     = fullConfig[section]
     if not cfg or not cfg.Enabled then
@@ -73,14 +83,26 @@ function fogHandler.applyAll(comp, fullConfig)
     for key, prop in pairs(fogHandler.propertyMap) do
         local newVal = cfg[key]
         if newVal ~= nil then
-            local oldVal = comp[prop]
+            -- Use pcall to safely access properties
+            local ok, oldVal = pcall(function() return comp[prop] end)
+            if not ok then
+                logger.log("[Warning] Failed to read %s, component may be invalid", prop)
+                return -- Exit early if component is invalid
+            end
+
             if utils.valuesDiffer(oldVal, newVal) then
                 logger.log("%s: %s -> %s",
                     key,
                     fogHandler.formatValue(oldVal),
                     fogHandler.formatValue(newVal)
                 )
-                comp[prop] = newVal
+
+                -- Use pcall for setting as well
+                local setOk = pcall(function() comp[prop] = newVal end)
+                if not setOk then
+                    logger.log("[Warning] Failed to set %s, component may be invalid", prop)
+                    return
+                end
             end
         end
     end
@@ -89,9 +111,10 @@ end
 -- Add a function to apply a single property (used by console commands)
 function fogHandler.applySingle(propName, value)
     local comp = fogHandler.findMapFogComponent()
-    if comp then
-        comp[propName] = value
-        return true
+    if comp and comp:IsValid() then
+        -- Use pcall for safety
+        local ok = pcall(function() comp[propName] = value end)
+        return ok
     end
     return false
 end

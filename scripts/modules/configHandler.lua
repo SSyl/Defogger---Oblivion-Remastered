@@ -170,7 +170,7 @@ end
 -- dumpConfig : convenience wrapper (never cached)
 --------------------------------------------------------------------------------
 function configHandler.dumpConfig()
-    logger.log(true, "[Config] Manual dump requested:")
+    logger.log("[Config] Manual dump requested:")
     configHandler.mergeConfig()   -- mergeConfig handles the dump when debug is on
 end
 
