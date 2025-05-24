@@ -199,7 +199,7 @@ function fogHandler.applyAll(comp, fullConfig)
     end
 end
 
--- Add a function to apply a single property (used by console commands)
+-- Apply a single property (used by console commands)
 function fogHandler.applySingle(propName, value)
     local comp = fogHandler.findMapFogComponent()
     if comp and comp:IsValid() then

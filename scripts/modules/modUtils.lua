@@ -191,4 +191,39 @@ function modUtils.clone(tbl)
     return out
 end
 
+--------------------------------------------------------------------------------
+-- Console Command Utilities
+--------------------------------------------------------------------------------
+
+---Parse arguments from a console command string.
+---@param fullCommand string The complete command string (e.g., "defogger.startdistance 100")
+---@param commandSuffix string The expected command suffix (e.g., "StartDistance")
+---@return string|nil rawValue The first argument or nil if none found
+function modUtils.parseConsoleCommand(fullCommand, commandSuffix)
+    local commandStr = tostring(fullCommand)
+    local lowerCommand = commandStr:lower()
+    local lowerSuffix = commandSuffix:lower()
+
+    -- Simple pattern: "defogger.suffix arguments"
+    local pattern = "defogger%." .. lowerSuffix .. "%s+(.+)"
+    local argsString = lowerCommand:match(pattern)
+
+    if not argsString then
+        return nil
+    end
+
+    -- Find where the arguments start in the original command (to preserve case)
+    local _, argStart = lowerCommand:find("defogger%." .. lowerSuffix .. "%s+")
+    if not argStart then
+        return nil
+    end
+
+    local originalArgs = commandStr:sub(argStart)
+
+    -- Get the first argument (the value)
+    local rawValue = originalArgs:match("%S+")
+
+    return rawValue and modUtils.trim(rawValue) or nil
+end
+
 return modUtils

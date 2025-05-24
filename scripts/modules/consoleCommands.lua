@@ -27,10 +27,10 @@ local colorProperties = {
 commandRecords[#commandRecords + 1] = {
     name = "defogger",
     desc = "Display this help",
-    fn   = function(_, _, Ar)
-        Ar:Log("[Defogger] Available commands:")
+    fn   = function(_, _, outputDevice)
+        outputDevice:Log("[Defogger] Available commands:")
         for _, cmd in ipairs(commandRecords) do
-            Ar:Log(string.format("  %-36s — %s", cmd.name, cmd.desc))
+            outputDevice:Log(string.format("  %-36s — %s", cmd.name, cmd.desc))
         end
         return true
     end
@@ -42,15 +42,15 @@ commandRecords[#commandRecords + 1] = {
 commandRecords[#commandRecords + 1] = {
     name = "defogger.reload",
     desc = "Reload config.ini and re-apply fog",
-    fn   = function(_, _, Ar)
-        Ar:Log("[Defogger] Reloading config...")
+    fn   = function(_, _, outputDevice)
+        outputDevice:Log("[Defogger] Reloading config...")
         local cfg = (configHandler.reloadConfig or configHandler.mergeConfig)()
         local comp = fogHandler.findMapFogComponent()
         if comp and comp:IsValid() then
             fogHandler.applyAll(comp, cfg)
-            Ar:Log("[Defogger] Settings reapplied.")
+            outputDevice:Log("[Defogger] Settings reapplied.")
         else
-            Ar:Log("[Defogger] No valid fog component found.")
+            outputDevice:Log("[Defogger] No valid fog component found.")
         end
         return true
     end
@@ -74,7 +74,9 @@ local propertyShortcuts = {
     { "OverrideLightColorsWithFogInscatteringColors","bOverrideLightColorsWithFogInscatteringColors",  "Toggle bOverrideLightColorsWithFogInscatteringColors"},
 }
 
--- Create a concrete command record for each property row.
+-- --------------------------------------------------------------------------------
+-- Create a command record for each property row.
+-- --------------------------------------------------------------------------------
 for _, entry in ipairs(propertyShortcuts) do
     local suffix, propName, description = table.unpack(entry)
     local consoleName = "defogger." .. suffix
@@ -82,59 +84,40 @@ for _, entry in ipairs(propertyShortcuts) do
     commandRecords[#commandRecords + 1] = {
         name = consoleName,
         desc = description,
-        fn   = function(_, parts, Ar)
-            --------------------------------------------------------------------
-            -- Parse user input
-            --------------------------------------------------------------------
-            local rawValue = parts[2] and utils.trim(parts[2]) or nil
-            local flagArg  = parts[3] and utils.trim(parts[3]) or ""
-            local forceSet = flagArg:lower():match("^%-?force$") ~= nil
+        fn   = function(fullCommand, parts, outputDevice)
 
-            --------------------------------------------------------------------
-            -- If no value supplied → echo current engine value
-            --------------------------------------------------------------------
-            if not rawValue or rawValue == "" then
+            -- Parse user input using modUtils
+            local rawValue = utils.parseConsoleCommand(fullCommand, suffix)
+
+            -- If no value supplied echo current engine value
+            if not rawValue or utils.trim(rawValue) == "" then
                 local comp = fogHandler.findMapFogComponent()
                 if comp and comp:IsValid() then
-                    -- Use pcall to safely read property
                     local success, current = pcall(function() return comp[propName] end)
                     if success then
-                        Ar:Log(string.format("[Defogger] %s = %s", propName, fogHandler.formatValue(current)))
+                        outputDevice:Log(string.format("[Defogger] %s = %s", propName, fogHandler.formatValue(current)))
                     else
-                        Ar:Log("[Defogger] Failed to read property value (component may be invalid)")
+                        outputDevice:Log("[Defogger] Failed to read property value (component may be invalid)")
                     end
                 else
-                    Ar:Log("[Defogger] No valid fog component found.")
+                    outputDevice:Log("[Defogger] No valid fog component found.")
                 end
                 return true
             end
 
-            --------------------------------------------------------------------
-            -- Validate / coerce input
-            --------------------------------------------------------------------
+            -- Validate input using modUtils
             local parsedValue = utils.parseValueForProperty(propName, rawValue, colorProperties, {
-                log = function(_, fmt, ...) Ar:Log(fmt:format(...)) end
+                log = function(_, fmt, ...) outputDevice:Log(fmt:format(...)) end
             })
             if parsedValue == nil then return true end
 
-            --------------------------------------------------------------------
-            -- Apply override
-            --------------------------------------------------------------------
-            local comp = fogHandler.findMapFogComponent()
-            if comp and comp:IsValid() then 
-                -- Use pcall to safely set the force flag
-                pcall(function() comp._defoggerForce = forceSet end)
-            end
-
+            -- Apply the value
             local success = fogHandler.applySingle(propName, parsedValue)
 
             if success then
-                Ar:Log(string.format("[Defogger] %s %s to %s",
-                                     propName,
-                                     forceSet and "force-set" or "set",
-                                     rawValue))
+                outputDevice:Log(string.format("[Defogger] %s set to %s", propName, rawValue))
             else
-                Ar:Log("[Defogger] Failed to apply value (component may be invalid)")
+                outputDevice:Log("[Defogger] Failed to apply value (component may be invalid)")
             end
 
             return true
@@ -143,25 +126,25 @@ for _, entry in ipairs(propertyShortcuts) do
 end
 
 -- --------------------------------------------------------------------------------
--- register every command with UE4SS
+-- Register every command with UE4SS (case-insensitive)
 -- --------------------------------------------------------------------------------
 for _, cmd in ipairs(commandRecords) do
     -- Create a case-insensitive command handler function
-    local handlerFn = function(fullCommand, parts, Ar)
+    local handlerFn = function(fullCommand, parts, outputDevice)
         -- Wrap the entire handler in pcall for safety
         local success, err = pcall(function()
-            return cmd.fn(fullCommand, parts, Ar)
+            return cmd.fn(fullCommand, parts, outputDevice)
         end)
 
         if not success then
-            Ar:Log(string.format("[Defogger] Command error: %s", tostring(err)))
+            outputDevice:Log(string.format("[Defogger] Command error: %s", tostring(err)))
             return true
         end
 
         return success
     end
 
-    -- Register the original command (for those who know the correct case)
+    -- Register the original command (exact case)
     RegisterConsoleCommandHandler(cmd.name, handlerFn)
 
     -- Register a lowercase version (for case-insensitive matching)
@@ -169,9 +152,28 @@ for _, cmd in ipairs(commandRecords) do
     if lowerName ~= cmd.name then
         RegisterConsoleCommandHandler(lowerName, handlerFn)
     end
+
+    -- Also register with different case variations for common mistakes
+    if cmd.name:find("%.") then
+        -- For commands like "defogger.StartDistance", also register "defogger.startdistance"
+        local parts = {}
+        for part in cmd.name:gmatch("[^%.]+") do
+            table.insert(parts, part)
+        end
+        if #parts == 2 then
+            local prefix = parts[1]:lower()  -- "defogger"
+            local suffix = parts[2]:lower()  -- "startdistance"
+            local mixedCase = prefix .. "." .. suffix
+            if mixedCase ~= cmd.name and mixedCase ~= lowerName then
+                RegisterConsoleCommandHandler(mixedCase, handlerFn)
+            end
+        end
+    end
 end
 
 -- Optional alias so "defogger " (with trailing space) also triggers help
-RegisterConsoleCommandHandler("defogger ", commandRecords[1].fn)
+RegisterConsoleCommandHandler("defogger ", function(fullCommand, parts, outputDevice)
+    return commandRecords[1].fn(fullCommand, {"defogger"}, outputDevice)
+end)
 
 return consoleCommands
