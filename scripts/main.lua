@@ -1,54 +1,23 @@
 -- Mods/Defogger/Scripts/main.lua
 print("[Defogger] Mod loading...\n")
 
-local logger = require("modules.logger")
-logger.debug = true
+local UEHelpers = require("UEHelpers")
 local config = require("modules.configHandler")
 local fogHandler = require("modules.fogHandler")
-local UEHelpers = require("UEHelpers")
+local logger = require("modules.logger")
+
+logger.debug = false
 
 config.invalidateCache()
 local settings = config.mergeConfig()
 
--- This initial block does not to run for fog in a playable map context due to main menu. Leaving here in case it turns out we do need it
--- ExecuteInGameThread(function()
---     logger.log("Initial application thread started.")
---     local success, err = pcall(function()
---         -- Get GameplayStatics using the helper. This might error if not found.
---         local GameplayStatics = UEHelpers.GetGameplayStatics()
---         -- No need to check 'if not GameplayStatics then' because pcall handles the error case.
-
---         -- Get World using the helper. This might return an invalid object.
---         local world = UEHelpers.GetWorld() -- Or UEHelpers.GetWorldContextObject()
---         if not world or not world:IsValid() then
---             logger.log("[Warning] Initial: UEHelpers.GetWorld() returned an invalid world (normal if in main menu or very early load).")
---             return -- Exit this pcall's function if no valid world
---         end
-
---         -- Now that we have a valid world and GameplayStatics...
---         logger.log("Initial: World is valid. Searching for fog component.")
---         local fog = fogHandler.findMapFogComponent()
---         if fog and fog:IsValid() then
---             logger.log("Found fog component at startup (%s), applying settings.", fog:GetFullName())
---             fogHandler.applyAll(fog, settings)
---         else
---             logger.log("[Warning] No valid map fog component found at startup (normal if in main menu).")
---         end
---     end)
-
---     if not success then
---         -- 'err' will contain the error message, e.g., from UEHelpers.GetGameplayStatics() if it failed
---         logger.log("[Error] Failed to apply initial settings: %s", tostring(err))
---     end
--- end)
-
--- Re-apply whenever a new fog component appears (e.g. on level load)
+-- Apply whenever a new fog component appears (e.g. on level load)
 NotifyOnNewObject(
     "/Script/Engine.ExponentialHeightFogComponent",
     function(comp)
         logger.log("NotifyOnNewObject triggered for component: %s", comp and comp:GetFullName() or "Comp Nil or Invalid Initially")
 
-        local delayMilliseconds = 125 -- ExecuteWithDelay in milliseconds. Should help prevent crash. Might need to be increased
+        local delayMilliseconds = 5 -- ExecuteWithDelay in milliseconds. Should help prevent crash. Higher than 10 stops fog from being applied in certain interiors
         logger.log("NotifyOnNewObject - Scheduling delayed processing in %s ms for component: %s", delayMilliseconds, comp and comp:GetFullName() or "Comp Nil or Invalid Initially")
 
         ExecuteWithDelay(delayMilliseconds, function()
@@ -79,7 +48,7 @@ NotifyOnNewObject(
     end
 )
 
--- Hooks
+-- Hooks for console commands
 local setterHooks = {
     StartDistance                       = "/Script/Engine.ExponentialHeightFogComponent:SetStartDistance",
     FogCutOffDistance                   = "/Script/Engine.ExponentialHeightFogComponent:SetFogCutoffDistance",
